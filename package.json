@@ -1,0 +1,27 @@
+{
+  "name": "mcpmux-install",
+  "version": "1.0.0",
+  "description": "McpMux install script server — serves install.sh at install.mcpmux.com",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy --env production",
+    "test": "vitest",
+    "type-check": "tsc --noEmit"
+  },
+  "author": "McpMux Team",
+  "license": "MIT",
+  "packageManager": "pnpm@9.0.0",
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.10",
+    "@cloudflare/workers-types": "^4.20260128.0",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.61.1"
+  },
+  "dependencies": {
+    "hono": "^4.6.15"
+  }
+}

@@ -1,0 +1,19 @@
+name = "mcpmux-install"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# R2 bucket for APT repository (shared with apt.mcpmux.com)
+# Uncomment once the bucket is created:
+# [[r2_buckets]]
+# binding = "APT_BUCKET"
+# bucket_name = "mcpmux-apt"
+
+[env.production]
+name = "mcpmux-install"
+routes = [
+  { pattern = "install.mcpmux.com", custom_domain = true }
+]
+
+# [[env.production.r2_buckets]]
+# binding = "APT_BUCKET"
+# bucket_name = "mcpmux-apt"
