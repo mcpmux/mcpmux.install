@@ -114,53 +114,66 @@ fi
 
 info "Installing McpMux v\${VERSION}"
 
-# ── GPG verification helper ─────────────────────────────────────────
+# ── Signature verification ──────────────────────────────────────────
 
+# The McpMux release signing key (also the APT repository key). Every
+# download must carry a detached signature made by this exact key.
+SIGNING_KEY_URL="https://apt.mcpmux.com/key.gpg"
+SIGNING_KEY_FPR="E196CB0DB3E0B26F65F17AA2C184B00D5E9016FE"
+
+# Downloads land in a private temp dir rather than a fixed /tmp path that
+# another local user could pre-create, and are removed on exit. apt reads
+# local packages as the unprivileged _apt user, so the dir is world-readable
+# (never writable).
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
+chmod 755 "$WORK_DIR"
+
+# Fails closed: no gpg, no signature or a bad signature aborts the install.
+# --skip-verify is the only way past it.
 verify_signature() {
-  local file="$1"
+  local file="$1" asset="$2"
   if [[ "$SKIP_VERIFY" == "true" ]]; then
     warn "Skipping signature verification (--skip-verify)"
     return 0
   fi
-  if ! command -v gpg &>/dev/null; then
-    warn "gpg not found — skipping signature verification"
-    warn "Install gnupg and re-run, or use --skip-verify to suppress this warning"
-    return 0
-  fi
+  command -v gpg &>/dev/null \\
+    || fail "gpg is required to verify the download. Install gnupg and re-run, or pass --skip-verify."
 
-  local sig_url="https://github.com/\${GITHUB_REPO}/releases/download/v\${VERSION}/$(basename "$file").sig"
-  local sig_file="\${file}.sig"
+  local sig_url="https://github.com/\${GITHUB_REPO}/releases/download/v\${VERSION}/\${asset}.sig"
+  curl -fsSL -o "\${file}.sig" "$sig_url" || fail "Signature not found: $sig_url"
 
-  if curl -fsSL -o "$sig_file" "$sig_url" 2>/dev/null; then
-    # Import McpMux signing key if not already present
-    if ! gpg --list-keys hello@mcpmux.com &>/dev/null 2>&1; then
-      curl -fsSL https://apt.mcpmux.com/key.gpg | gpg --import --quiet 2>/dev/null || true
-    fi
-    if gpg --verify "$sig_file" "$file" 2>/dev/null; then
-      ok "Signature verified"
-    else
-      warn "Signature verification failed — package may not be signed yet"
-    fi
-    rm -f "$sig_file"
-  else
-    warn "No signature file found — skipping verification"
+  # Verify in a throwaway keyring and accept only a signature whose primary
+  # key is the pinned McpMux key, whatever else the user's keyring trusts.
+  local gnupg_home="\${WORK_DIR}/gnupg"
+  mkdir -p -m 700 "$gnupg_home"
+  curl -fsSL -o "\${WORK_DIR}/signing-key.asc" "$SIGNING_KEY_URL" \\
+    || fail "Could not download the signing key: $SIGNING_KEY_URL"
+  GNUPGHOME="$gnupg_home" gpg --batch --quiet --import "\${WORK_DIR}/signing-key.asc" 2>/dev/null \\
+    || fail "Could not import the signing key"
+
+  local signer
+  signer=$(GNUPGHOME="$gnupg_home" gpg --batch --status-fd 1 --verify "\${file}.sig" "$file" 2>/dev/null \\
+    | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $NF }') || true
+  if [[ "$signer" != "$SIGNING_KEY_FPR" ]]; then
+    fail "Signature check failed for \${asset}; not installing. (Pre-releases carry no GPG signature: pass --skip-verify only if you trust the download.)"
   fi
+  ok "Signature verified"
 }
 
 # ── Install via detected package manager ─────────────────────────────
 
 install_deb() {
-  local deb_name="mcpmux_\${VERSION}_\${ARCH}.deb"
+  local deb_name="McpMux_\${VERSION}_\${ARCH}.deb"
   local deb_url="https://github.com/\${GITHUB_REPO}/releases/download/v\${VERSION}/\${deb_name}"
-  local tmp="/tmp/mcpmux.deb"
+  local pkg="\${WORK_DIR}/\${deb_name}"
 
   info "Downloading .deb package..."
-  curl -fsSL -o "$tmp" "$deb_url" || fail "Download failed: $deb_url"
-  verify_signature "$tmp"
+  curl -fsSL -o "$pkg" "$deb_url" || fail "Download failed: $deb_url"
+  verify_signature "$pkg" "$deb_name"
 
   info "Installing..."
-  sudo apt-get install -y "$tmp"
-  rm -f "$tmp"
+  sudo apt-get install -y "$pkg"
 
   echo ""
   info "Tip: For automatic updates via apt, add the McpMux repository:"
@@ -168,17 +181,19 @@ install_deb() {
 }
 
 install_rpm() {
-  local rpm_name="mcpmux-\${VERSION}-1.\${ARCH}.rpm"
+  local rpm_arch="\${ARCH}"
+  [[ "\${rpm_arch}" == "amd64" ]] && rpm_arch="x86_64"
+  [[ "\${rpm_arch}" == "arm64" ]] && rpm_arch="aarch64"
+  local rpm_name="McpMux-\${VERSION}-1.\${rpm_arch}.rpm"
   local rpm_url="https://github.com/\${GITHUB_REPO}/releases/download/v\${VERSION}/\${rpm_name}"
-  local tmp="/tmp/mcpmux.rpm"
+  local pkg="\${WORK_DIR}/\${rpm_name}"
 
   info "Downloading .rpm package..."
-  curl -fsSL -o "$tmp" "$rpm_url" || fail "Download failed: $rpm_url"
-  verify_signature "$tmp"
+  curl -fsSL -o "$pkg" "$rpm_url" || fail "Download failed: $rpm_url"
+  verify_signature "$pkg" "$rpm_name"
 
   info "Installing..."
-  sudo dnf install -y "$tmp"
-  rm -f "$tmp"
+  sudo dnf install -y "$pkg"
 }
 
 install_pacman() {
@@ -212,9 +227,10 @@ install_appimage() {
   mkdir -p "$install_dir"
 
   info "Downloading AppImage..."
-  curl -fsSL -o "$install_path" "$appimage_url" || fail "Download failed: $appimage_url"
-  verify_signature "$install_path"
-  chmod +x "$install_path"
+  local download="\${WORK_DIR}/\${appimage_name}"
+  curl -fsSL -o "$download" "$appimage_url" || fail "Download failed: $appimage_url"
+  verify_signature "$download" "$appimage_name"
+  install -m 755 "$download" "$install_path"
 
   ok "Installed to \${install_path}"
 
@@ -232,7 +248,7 @@ install_appimage() {
 # Check if APT repo is already configured (prefer managed updates)
 if [[ -f /etc/apt/sources.list.d/mcpmux.list ]]; then
   info "McpMux APT repository detected — using apt..."
-  sudo apt-get update && sudo apt-get install -y mcpmux
+  sudo apt-get update && sudo apt-get install -y mcp-mux
 elif command -v apt-get &>/dev/null; then
   install_deb
 elif command -v dnf &>/dev/null; then
@@ -273,7 +289,7 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/mcpmu
 
 # Install
 apt-get update
-apt-get install -y mcpmux
+apt-get install -y mcp-mux
 
 ok "McpMux installed!"
 echo "Updates will arrive automatically via 'apt upgrade'."
